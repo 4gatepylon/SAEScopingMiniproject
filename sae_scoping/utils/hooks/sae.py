@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import torch
 from beartype import beartype
 from beartype.typing import Any, Callable
@@ -101,7 +102,7 @@ class SAEWrapper(nn.Module):
         # NOTE assume batch indices are all except last (i.e. batch, token, etc...)
         d_model = x.shape[-1]  # OG
         ds_x = x.shape[:-1]  # OG
-        d_x = torch.prod(torch.tensor(ds_x)).item()  # flat shape
+        d_x = math.prod(ds_x)  # flat shape
         x = x.reshape(d_x, d_model)  # flat
         sae_out = self.sae(x.to(self.sae.dtype))
         # sae-lens vs. sparsify... (hotfix)

@@ -119,14 +119,14 @@ def rank_neurons(
                         truncation=True,
                         max_length=context_length,
                     )
-                    batch = {k: v.to(device) for k, v in batch.items()}
+                    batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
                 else:
                     batch = dataset[i]
-                    batch = {k: v.to(device) for k, v in batch.items()}
+                    batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
                 assert isinstance(batch, dict) and all(isinstance(k, str) for k in batch.keys()) and all(isinstance(v, torch.Tensor) for v in batch.values()), (
                     f"type(batch) is {type(batch)}, batch.keys() " + f"is {None if not isinstance(batch.keys(), dict) else batch.keys()}"
                 )
-                batch = {k: v.to(device) for k, v in batch.items()}  # low mem. so OK
+                batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}  # low mem. so OK
                 if ctx is not None:
                     assert "attention_mask" in batch
                     # The ctx reader in the hook expects flat
