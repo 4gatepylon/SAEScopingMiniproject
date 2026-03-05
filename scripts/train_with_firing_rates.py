@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import json
 import re
 from pathlib import Path
 import os
 import click
 import torch
 from beartype import beartype
-from datasets import concatenate_datasets
+from datasets import Dataset, concatenate_datasets, load_dataset
 from sae_lens import SAE
 from safetensors.torch import load_file
 from transformers import AutoTokenizer, Gemma2ForCausalLM, PreTrainedTokenizerBase
@@ -26,6 +27,90 @@ scoping recovery training and adversarial re-training.
 """
 
 GEMMA2_9B_SAE_RELEASE = "gemma-scope-9b-pt-res-canonical"
+
+
+def _build_chem_messages(examples: dict) -> dict:
+    """Convert StemQAMixture chemistry rows into OpenAI-style messages."""
+    msgs = []
+    has_answer = "answer" in examples
+    answers = examples["answer"] if has_answer else [None] * len(examples["question"])
+    for q, a in zip(examples["question"], answers):
+        msg: list[dict] = [{"role": "user", "content": q}]
+        if a:
+            msg.append({"role": "assistant", "content": str(a)})
+        msgs.append(msg)
+    return {"messages": msgs}
+
+
+def _build_apps_messages(examples: dict) -> dict:
+    """Convert codeparrot/apps rows into OpenAI-style messages."""
+    msgs = []
+    for q, raw_sols in zip(examples["question"], examples["solutions"]):
+        # solutions may be a JSON-encoded list or already a list
+        if isinstance(raw_sols, str):
+            try:
+                sols = json.loads(raw_sols)
+            except json.JSONDecodeError:
+                sols = [raw_sols]
+        else:
+            sols = raw_sols if raw_sols else []
+        msg: list[dict] = [{"role": "user", "content": q}]
+        if sols:
+            msg.append({"role": "assistant", "content": str(sols[0])})
+        msgs.append(msg)
+    return {"messages": msgs}
+
+
+def _build_ultrachat_messages(examples: dict) -> dict:
+    """Normalise ultrachat_200k messages to plain user/assistant dicts."""
+    msgs = []
+    for msg_list in examples["messages"]:
+        filtered = [{"role": m["role"], "content": m["content"]} for m in msg_list if m["role"] in ("user", "assistant")]
+        msgs.append(filtered)
+    return {"messages": msgs}
+
+
+@beartype
+def load_all_datasets(eval_test_size: int) -> tuple[dict[str, Dataset], dict[str, Dataset]]:
+    """
+    Returns (train_datasets, eval_datasets) where each is a dict mapping
+    dataset name -> HuggingFace Dataset with a ``messages`` column.
+
+    In-domain  : chemistry (StemQAMixture)
+    OOD eval   : apps (coding), ultrachat (general chat)
+    """
+    # --- in-domain: chemistry ------------------------------------------------
+    chem_raw = load_dataset("4gate/StemQAMixture", "chemistry", split="train")
+    chem_splits = chem_raw.train_test_split(test_size=0.1, seed=42)
+    chem_train_raw, chem_test_raw = chem_splits["train"], chem_splits["test"]
+
+    drop_cols = chem_train_raw.column_names
+    chem_train = chem_train_raw.map(_build_chem_messages, batched=True, remove_columns=drop_cols)
+    chem_eval = chem_test_raw.select(range(min(eval_test_size, len(chem_test_raw)))).map(
+        _build_chem_messages, batched=True, remove_columns=chem_test_raw.column_names
+    )
+
+    # --- OOD: coding (apps) --------------------------------------------------
+    apps_raw = load_dataset("codeparrot/apps", split="train")
+    apps_eval = apps_raw.select(range(min(eval_test_size, len(apps_raw)))).map(
+        _build_apps_messages, batched=True, remove_columns=apps_raw.column_names
+    )
+
+    # --- OOD: general chat (ultrachat) ---------------------------------------
+    ultrachat_test_raw = load_dataset("HuggingFaceH4/ultrachat_200k", split="test_sft")
+    ultrachat_eval = ultrachat_test_raw.select(range(min(eval_test_size, len(ultrachat_test_raw)))).map(
+        _build_ultrachat_messages, batched=True, remove_columns=ultrachat_test_raw.column_names
+    )
+
+    train_datasets: dict[str, Dataset] = {
+        "chemistry": chem_train,
+    }
+    eval_datasets: dict[str, Dataset] = {
+        "chemistry": chem_eval,
+        "apps": apps_eval,
+        "ultrachat": ultrachat_eval,
+    }
+    return train_datasets, eval_datasets
 
 
 @beartype
@@ -117,9 +202,7 @@ def _main(
         pruned_sae = pruned_sae.to(device)
 
     # 5. Build training and evaluation datasets
-    # TODO contributor, you will want to have train and test datasets and then have a dictionary of
-    # <dataset_name>: <dataset>["train"] and <dataset>["test"]
-    all_eval_datasets = {} # <--- fill in test here
+    train_datasets, all_eval_datasets = load_all_datasets(eval_test_size)
     # Filter eval datasets if specified
     if eval_on_datasets is not None:
         eval_dataset_names = [name.strip() for name in eval_on_datasets.split(",")]
@@ -131,7 +214,6 @@ def _main(
     else:
         eval_datasets = all_eval_datasets
         print(f"Evaluating on all datasets: {list(eval_datasets.keys())}")
-    train_datasets = {} # TODO(contributor) fill in train here
     if train_on_dataset not in train_datasets:
         raise ValueError(f"Invalid train on dataset: {train_on_dataset}")
     train_dataset = train_datasets[train_on_dataset]
@@ -224,7 +306,7 @@ def _main(
     help="Special hookpoint to use",
 )
 @click.option("--checkpoint", "-c", type=str, default=None, help="Checkpoint to load")
-@click.option("--train-on-dataset", "-t", type=str, default="biology", help="Dataset to train on")
+@click.option("--train-on-dataset", "-t", type=str, default="chemistry", help="Dataset to train on")
 @click.option(
     "--wandb-project-name",
     "-w",
