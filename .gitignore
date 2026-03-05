@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Cache and output directories
+scripts/.cache/
+outputs_gemma9b/
+
+# Wandb
+wandb/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
