@@ -8,7 +8,7 @@ import os
 import click
 import torch
 from beartype import beartype
-from datasets import concatenate_datasets
+from datasets import Dataset, concatenate_datasets, load_dataset
 from sae_lens import SAE
 from safetensors.torch import load_file
 from transformers import AutoTokenizer, Gemma2ForCausalLM, PreTrainedTokenizerBase
@@ -117,9 +117,52 @@ def _main(
         pruned_sae = pruned_sae.to(device)
 
     # 5. Build training and evaluation datasets
-    # TODO contributor, you will want to have train and test datasets and then have a dictionary of
-    # <dataset_name>: <dataset>["train"] and <dataset>["test"]
-    all_eval_datasets = {} # <--- fill in test here
+    # Dataset registry: each entry has a HuggingFace source and a function that
+    # converts it into a Dataset with a single "text" column (plain strings) so
+    # SFTTrainer can handle it without any additional configuration.
+    def _load_stemqa(config: str, split: str, max_samples: int | None = None) -> Dataset:
+        ds = load_dataset("4gate/StemQAMixture", config, split=split)
+        assert "question" in ds.column_names, (
+            f"Schema validation failed: 'question' column not found in {config} split '{split}'. "
+            f"Available columns: {ds.column_names}"
+        )
+        if "answer" in ds.column_names:
+            ds = ds.map(lambda ex: {"text": f"Question: {ex['question']}\nAnswer: {ex['answer']}"}, remove_columns=ds.column_names)
+        else:
+            ds = ds.select_columns(["question"]).rename_column("question", "text")
+        if max_samples is not None:
+            ds = ds.select(range(min(max_samples, len(ds))))
+        return ds
+
+    def _load_ultrachat(split: str, max_samples: int | None = None) -> Dataset:
+        ds = load_dataset("HuggingFaceH4/ultrachat_200k", split=split)
+        def _extract(examples):
+            texts = []
+            for msgs in examples["messages"]:
+                parts = [f"{m['role'].capitalize()}: {m['content']}" for m in msgs]
+                texts.append("\n".join(parts))
+            return {"text": texts}
+        ds = ds.map(_extract, batched=True, remove_columns=ds.column_names)
+        if max_samples is not None:
+            ds = ds.select(range(min(max_samples, len(ds))))
+        return ds
+
+    def _load_apps(split: str, max_samples: int | None = None) -> Dataset:
+        ds = load_dataset("codeparrot/apps", split=split)
+        assert "question" in ds.column_names, (
+            f"Schema validation failed: 'question' column not found in apps split '{split}'. "
+            f"Available columns: {ds.column_names}"
+        )
+        ds = ds.select_columns(["question"]).rename_column("question", "text")
+        if max_samples is not None:
+            ds = ds.select(range(min(max_samples, len(ds))))
+        return ds
+
+    all_eval_datasets = {
+        "chemistry": _load_stemqa("chemistry", "test", max_samples=eval_test_size),
+        "ultrachat":  _load_ultrachat("test_sft", max_samples=eval_test_size),
+        "apps":       _load_apps("test", max_samples=eval_test_size),
+    }
     # Filter eval datasets if specified
     if eval_on_datasets is not None:
         eval_dataset_names = [name.strip() for name in eval_on_datasets.split(",")]
@@ -131,7 +174,11 @@ def _main(
     else:
         eval_datasets = all_eval_datasets
         print(f"Evaluating on all datasets: {list(eval_datasets.keys())}")
-    train_datasets = {} # TODO(contributor) fill in train here
+    train_datasets = {
+        "chemistry": _load_stemqa("chemistry", "train"),
+        "ultrachat":  _load_ultrachat("train_sft"),
+        "apps":       _load_apps("train"),
+    }
     if train_on_dataset not in train_datasets:
         raise ValueError(f"Invalid train on dataset: {train_on_dataset}")
     train_dataset = train_datasets[train_on_dataset]
