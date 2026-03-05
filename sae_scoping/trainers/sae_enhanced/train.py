@@ -56,13 +56,12 @@ def train_sae_enhanced_model(
     **kwargs: dict[str, Any],
 ) -> PreTrainedModel | None:
     wandb_project_name = kwargs.get("wandb_project_name", os.environ.get("WANDB_PROJECT", None))
-    if wandb_project_name is None:
-        raise ValueError("WANDB_PROJECT is not set")
     wandb_run_name = kwargs.get("wandb_run_name", os.environ.get("WANDB_RUN_NAME", None))
     old_environ_name = os.environ.get("WANDB_PROJECT", None)
     try:
         # 1. setup trainer arguments
-        os.environ["WANDB_PROJECT"] = wandb_project_name
+        if wandb_project_name is not None:
+            os.environ["WANDB_PROJECT"] = wandb_project_name
         if wandb_run_name is not None:
             os.environ["WANDB_RUN_NAME"] = wandb_run_name
         if trainer_algorithm == "sft" and trainer_config is None:

@@ -4,11 +4,9 @@ import gc
 import hashlib
 import re
 from pathlib import Path
-import os
 import click
 import torch
 from beartype import beartype
-from datasets import concatenate_datasets
 from sae_lens import SAE
 from safetensors.torch import load_file
 from transformers import AutoTokenizer, Gemma2ForCausalLM, PreTrainedTokenizerBase
@@ -62,11 +60,9 @@ def _main(
     special_hookpoint: str | None,
     checkpoint: str | None,
     train_on_dataset: str,
-    wandb_project_name: str,
     save_every: int,
     save_limit: int,
     output_dir: str | None = None,
-    wandb_run_name: str | None = None,
     save_output: bool = False,
     max_length: int = 1024,
     eval_on_datasets: str | None = None,  # comma-delimited list of dataset names, None = all
@@ -160,7 +156,7 @@ def _main(
         save_steps=save_every,
         bf16=True,
         save_total_limit=save_limit,
-        report_to="wandb",
+        report_to="none",
         max_length=max_length,  # SAE context length bounds this
         gradient_checkpointing=False,
         # RuntimeError: You're using `assistant_only_loss=True`, but at least one
@@ -172,19 +168,12 @@ def _main(
         #     "messages" in train_dataset.column_names
         #     and not "text" in train_dataset.column_names
         # ),
-        run_name=wandb_run_name,
     )
-    if wandb_run_name is None:
-        wandb_run_name = f"{train_on_dataset}/{sae_id.replace('/', '_')}"
-        if sae_id != "vanilla":
-            wandb_run_name += f"/h{threshold}/{model_name_or_path_hash[:10]}"
     if special_hookpoint is not None:  # used to limit # layers trained on
         hookpoint = special_hookpoint
     # NOTE: while technically not supported by my code, since it's passthrough, you
     # SHOULD be able to use not only "text" but also "messages" etc... (looke at
     # SFTTrainer docs for supported formats)
-    os.environ["WANDB_PROJECT"] = wandb_project_name  # defensive code
-    os.environ["WANDB_RUN_NAME"] = wandb_run_name  # defensive code
     train_sae_enhanced_model(
         train_dataset=train_dataset,
         eval_dataset=eval_datasets,
@@ -194,9 +183,7 @@ def _main(
         T=0.0,
         hookpoint=hookpoint,
         save_output=save_output,
-        sft_config=sft_config,
-        wandb_project_name=wandb_project_name,
-        wandb_run_name=wandb_run_name,
+        trainer_config=sft_config,
     )
 
     # Cleanup
@@ -225,13 +212,6 @@ def _main(
 )
 @click.option("--checkpoint", "-c", type=str, default=None, help="Checkpoint to load")
 @click.option("--train-on-dataset", "-t", type=str, default="biology", help="Dataset to train on")
-@click.option(
-    "--wandb-project-name",
-    "-w",
-    type=str,
-    default="gemma-scope-9b-recovery-train",
-    help="Wandb project name",
-)
 @click.option("--save-every", "-se", type=int, default=1000, help="Save every n steps")
 @click.option("--save-limit", "-sl", type=int, default=10, help="Save limit")
 # NOTE please run for gemma
@@ -266,7 +246,6 @@ def main(
     special_hookpoint: str | None,
     checkpoint: str | None,
     train_on_dataset: str,
-    wandb_project_name: str,
     save_every: int,
     save_limit: int,
     max_length: int,
@@ -278,17 +257,16 @@ def main(
     Example with benign recovery training in-domain (NOTE in this we limit how many
     layers are trained by using `special_hookpoint`; special hookpoint is meant only for vanilla):
     ```
-    python3 script_2025_12_08_train_sft_gemma9b_sae.py \
+    python3 scripts/train_with_firing_rates.py \
         -p vanilla \
         -b 2 -a 16 -hook model.layers.31 -s 40000 -h 1e-4
     ```
 
     Example adversarial re-training (after recovery training) example:
     ```
-    python3 script_2025_12_08_train_sft_gemma9b_sae.py \
+    python3 scripts/train_with_firing_rates.py \
         -c /<my_path>/sae_training/outputs_gemma9b/ultrachat/layer_31_width_16k_canonical_h0.0001_85cac49528/checkpoint-2000 \
         -t ultrachat \
-        -w gemma-scope-9b-recovery-attack-2025-12-24 \
         -s 4000 -a 8 -b 4 \
         -p /<my_path>/deleteme_cache_bio_only/ignore_padding_True/biology/layer_31--width_16k--canonical/distribution.safetensors
     ```
@@ -301,7 +279,6 @@ def main(
         special_hookpoint=special_hookpoint,
         checkpoint=checkpoint,
         train_on_dataset=train_on_dataset,
-        wandb_project_name=wandb_project_name,
         save_every=save_every,
         save_limit=save_limit,
         save_output=False,
