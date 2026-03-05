@@ -26,7 +26,7 @@ def get_default_grpo_config(
         bf16=True,  # H100/A100 hopefully will work here? Llama2
         remove_unused_columns=False,
         save_total_limit=2,
-        report_to="wandb",
+        report_to="none",
         max_steps=kwargs.get("max_steps", 1_000),
         # TODO(Adriano) please note that for some mysterious reason eval is not supporeted during
         # GRPOTrainer WanDB training, so we may want to support or add callbacks for evals (for
@@ -69,7 +69,7 @@ def get_default_sft_config(
         # load_best_model_at_end=True, # <- can't do this w/out matching save/eval strat
         # metric_for_best_model="eval_loss",
         greater_is_better=False,
-        report_to="wandb",
+        report_to="none",
         max_steps=kwargs.get("max_steps", 1_000),
         max_length=kwargs.get("context_length", 1024),
         # TODO(adriano) don't hardcode
